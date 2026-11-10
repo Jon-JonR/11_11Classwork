@@ -19,6 +19,11 @@
     .empty-inner span { display:block; margin-top:8px; color:#a3afa6; font:12px/1.6 Inter, system-ui, sans-serif; }
     .add-button { position:fixed; z-index:2; right:28px; bottom:28px; display:flex; align-items:center; gap:9px; padding:13px 17px; border:0; border-radius:999px; background:var(--ink); color:#fff; cursor:pointer; box-shadow:0 10px 25px rgba(23,35,31,.2); font:700 13px Inter, system-ui, sans-serif; transition:transform .2s ease, background .2s ease; }
     .add-button:hover { background:#2f5f4b; transform:translateY(-2px); }
+    .clear-button { position:fixed; z-index:2; right:28px; bottom:82px; display:flex; align-items:center; gap:9px; padding:11px 15px; border:1px solid rgba(23,35,31,.18); border-radius:999px; background:rgba(255,255,255,.84); color:var(--ink); cursor:pointer; box-shadow:0 8px 20px rgba(23,35,31,.1); backdrop-filter:blur(8px); font:700 12px Inter, system-ui, sans-serif; transition:transform .2s ease, background .2s ease, opacity .2s ease; }
+    .clear-button:hover:not(:disabled) { background:#fff; transform:translateY(-2px); }
+    .clear-button:disabled { cursor:not-allowed; opacity:.45; }
+    .clear-button.voted { background:#e5f1e9; color:#2f7657; border-color:#b9d8c5; }
+    .clear-button svg { width:15px; height:15px; }
     .add-button input { display:none; }
     .add-button svg { width:16px; height:16px; }
     .connection { position:fixed; z-index:2; left:20px; bottom:20px; display:flex; align-items:center; gap:7px; padding:8px 11px; border:1px solid rgba(23,35,31,.1); border-radius:999px; background:rgba(255,255,255,.72); color:#849087; backdrop-filter:blur(8px); font-size:10px; }
@@ -27,6 +32,7 @@
     @media (max-width:600px) {
       .canvas { width:1400px; height:1000px; }
       .add-button { right:18px; bottom:18px; }
+      .clear-button { right:18px; bottom:70px; }
       .connection { left:12px; bottom:13px; }
     }
   </style>
@@ -37,6 +43,7 @@
     <div class="empty" id="empty"><div class="empty-inner">The canvas is waiting.<span>Add an image and it will find its own place.</span></div></div>
   </main>
   <label class="add-button" for="image-input"><input id="image-input" type="file" accept="image/*" /><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 11V2m0 0L4.8 5.2M8 2l3.2 3.2M2 9.5v2.7c0 .99.81 1.8 1.8 1.8h8.4c.99 0 1.8-.81 1.8-1.8V9.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Add image</label>
+  <button class="clear-button" id="clear-button" type="button" disabled><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 4.5h10M6 4.5V3h4v1.5m-5.5 0 .6 8.5h5.8l.6-8.5M6.8 7v3.5M9.2 7v3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="clear-label">Connect to vote</span></button>
   <div class="connection"><span class="dot" id="status-dot"></span><span id="status-text">Local preview</span></div>
   <script>
     const MAX_SIZE = 220;
@@ -45,9 +52,15 @@
     const input = document.querySelector('#image-input');
     const statusText = document.querySelector('#status-text');
     const statusDot = document.querySelector('#status-dot');
+    const clearButton = document.querySelector('#clear-button');
+    const clearLabel = document.querySelector('#clear-label');
     const viewport = document.querySelector('.canvas-wrap');
     let images = [];
     let socket;
+    let connectedClients = 0;
+    let clearVotes = 0;
+    let clearQuorum = 1;
+    let hasVoted = false;
     let panX = 0;
     let panY = 0;
     let dragStartX = 0;
@@ -118,17 +131,42 @@
 
     input.addEventListener('change', event => { if (event.target.files[0]) addImage(event.target.files[0]); event.target.value = ''; });
 
+    function updateClearButton() {
+      clearButton.disabled = !socket || socket.readyState !== WebSocket.OPEN || hasVoted;
+      clearButton.classList.toggle('voted', hasVoted);
+      if (!socket || socket.readyState !== WebSocket.OPEN) clearLabel.textContent = 'Connect to vote';
+      else if (hasVoted) clearLabel.textContent = `Vote submitted · ${clearVotes}/${clearQuorum}`;
+      else clearLabel.textContent = `Vote to clear · ${clearVotes}/${clearQuorum}`;
+    }
+
+    function clearCanvas() {
+      canvas.querySelectorAll('.placed-image').forEach(image => image.remove());
+      images = [];
+      empty.style.display = 'grid';
+    }
+
+    clearButton.addEventListener('click', () => {
+      if (socket?.readyState === WebSocket.OPEN && !hasVoted) socket.send(JSON.stringify({ type:'clear-vote' }));
+    });
+
     function connect() {
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
       try {
         socket = new WebSocket(`${protocol}//${location.host}`);
-        socket.onopen = () => { statusDot.classList.add('online'); statusText.textContent = 'Connected live'; };
-        socket.onmessage = event => { const message = JSON.parse(event.data); if (message.type === 'snapshot') message.items.forEach(render); if (message.type === 'image' && message.item) render(message.item); };
-        socket.onclose = () => { statusDot.classList.remove('online'); statusText.textContent = 'Offline mode'; };
+        socket.onopen = () => { statusDot.classList.add('online'); statusText.textContent = 'Connected live'; socket.send(JSON.stringify({ type:'hello', clientId })); updateClearButton(); };
+        socket.onmessage = event => {
+          const message = JSON.parse(event.data);
+          if (message.type === 'snapshot') message.items.forEach(render);
+          if (message.type === 'image' && message.item) render(message.item);
+          if (message.type === 'presence') { connectedClients = message.connected; clearVotes = message.votes; clearQuorum = message.quorum; hasVoted = message.voted; updateClearButton(); statusText.textContent = `Connected live · ${connectedClients} active`; }
+          if (message.type === 'cleared') clearCanvas();
+        };
+        socket.onclose = () => { statusDot.classList.remove('online'); statusText.textContent = 'Offline mode'; updateClearButton(); };
         socket.onerror = () => socket.close();
       } catch { statusText.textContent = 'Offline mode'; }
     }
 
+    updateClearButton();
     if (location.protocol !== 'file:') connect();
   </script>
 </body>
