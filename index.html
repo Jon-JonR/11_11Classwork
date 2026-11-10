@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Shared Canvas</title>
+  <style>
+    :root { --paper:#f7f8f3; --ink:#17231f; }
+    * { box-sizing:border-box; }
+    html, body { width:100%; height:100%; margin:0; overflow:hidden; }
+    body { background:var(--paper); color:var(--ink); font-family:Inter, system-ui, sans-serif; }
+    .canvas-wrap { position:fixed; inset:0; overflow:hidden; background-color:#fbfcf8; background-image:radial-gradient(#d6ddd5 .75px, transparent .75px); background-size:19px 19px; }
+    .canvas { position:absolute; inset:0; }
+    .placed-image { position:absolute; max-width:220px; max-height:220px; object-fit:contain; border:5px solid #fff; outline:1px solid rgba(23,35,31,.12); box-shadow:0 10px 19px rgba(31,48,39,.13); animation:arrive .45s cubic-bezier(.2,.8,.2,1); user-select:none; }
+    @keyframes arrive { from { opacity:0; transform:scale(.6) rotate(-9deg); } to { opacity:1; transform:scale(1) rotate(var(--rotation)); } }
+    .empty { position:absolute; inset:0; display:grid; place-items:center; pointer-events:none; }
+    .empty-inner { max-width:280px; padding:20px; color:#8a978e; text-align:center; font:500 18px/1.4 Georgia, serif; }
+    .empty-inner span { display:block; margin-top:8px; color:#a3afa6; font:12px/1.6 Inter, system-ui, sans-serif; }
+    .add-button { position:fixed; z-index:2; right:28px; bottom:28px; display:flex; align-items:center; gap:9px; padding:13px 17px; border:0; border-radius:999px; background:var(--ink); color:#fff; cursor:pointer; box-shadow:0 10px 25px rgba(23,35,31,.2); font:700 13px Inter, system-ui, sans-serif; transition:transform .2s ease, background .2s ease; }
+    .add-button:hover { background:#2f5f4b; transform:translateY(-2px); }
+    .add-button input { display:none; }
+    .add-button svg { width:16px; height:16px; }
+    .connection { position:fixed; z-index:2; left:20px; bottom:20px; display:flex; align-items:center; gap:7px; padding:8px 11px; border:1px solid rgba(23,35,31,.1); border-radius:999px; background:rgba(255,255,255,.72); color:#849087; backdrop-filter:blur(8px); font-size:10px; }
+    .dot { width:7px; height:7px; border-radius:50%; background:#e3bb54; }
+    .dot.online { background:#61b786; box-shadow:0 0 0 4px #61b78622; }
+    @media (max-width:600px) { .add-button { right:18px; bottom:18px; } .connection { left:12px; bottom:13px; } }
+  </style>
+</head>
+<body>
+  <main class="canvas-wrap" aria-label="Shared image canvas">
+    <div class="canvas" id="canvas"></div>
+    <div class="empty" id="empty"><div class="empty-inner">The canvas is waiting.<span>Add an image and it will find its own place.</span></div></div>
+  </main>
+  <label class="add-button" for="image-input"><input id="image-input" type="file" accept="image/*" /><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 11V2m0 0L4.8 5.2M8 2l3.2 3.2M2 9.5v2.7c0 .99.81 1.8 1.8 1.8h8.4c.99 0 1.8-.81 1.8-1.8V9.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Add image</label>
+  <div class="connection"><span class="dot" id="status-dot"></span><span id="status-text">Local preview</span></div>
+  <script>
+    const MAX_SIZE = 220;
+    const canvas = document.querySelector('#canvas');
+    const empty = document.querySelector('#empty');
+    const input = document.querySelector('#image-input');
+    const statusText = document.querySelector('#status-text');
+    const statusDot = document.querySelector('#status-dot');
+    let images = [];
+    let socket;
+    const clientId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random());
+
+    function render(item) {
+      if (document.querySelector(`[data-image-id="${item.id}"]`)) return;
+      const img = document.createElement('img');
+      img.className = 'placed-image'; img.dataset.imageId = item.id; img.src = item.src; img.alt = 'A participant contribution';
+      img.style.left = `${item.x}%`; img.style.top = `${item.y}%`; img.style.width = `${item.width}px`; img.style.height = `${item.height}px`;
+      img.style.setProperty('--rotation', `${item.rotation}deg`); img.style.transform = `rotate(${item.rotation}deg)`;
+      canvas.appendChild(img); images.push(item); empty.style.display = images.length ? 'none' : 'grid';
+    }
+
+    function randomPlacement(width, height) {
+      const rect = canvas.getBoundingClientRect();
+      const maxX = Math.max(0, rect.width - width); const maxY = Math.max(0, rect.height - height);
+      return { x: maxX ? Math.round(Math.random() * maxX / rect.width * 1000) / 10 : 0, y: maxY ? Math.round(Math.random() * maxY / rect.height * 1000) / 10 : 0 };
+    }
+
+    function addImage(file) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const source = new Image();
+        source.onload = () => {
+          let width = source.naturalWidth; let height = source.naturalHeight;
+          const scale = Math.min(1, MAX_SIZE / Math.max(width, height));
+          width = Math.max(35, Math.round(width * scale)); height = Math.max(35, Math.round(height * scale));
+          const item = { id:`${clientId}-${Date.now()}`, src:reader.result, width, height, ...randomPlacement(width, height), rotation:Math.round(Math.random() * 12 - 6) };
+          render(item); if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type:'image', item }));
+        };
+        source.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    input.addEventListener('change', event => { if (event.target.files[0]) addImage(event.target.files[0]); event.target.value = ''; });
+
+    function connect() {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      try {
+        socket = new WebSocket(`${protocol}//${location.host}`);
+        socket.onopen = () => { statusDot.classList.add('online'); statusText.textContent = 'Connected live'; };
+        socket.onmessage = event => { const message = JSON.parse(event.data); if (message.type === 'snapshot') message.items.forEach(render); if (message.type === 'image' && message.item) render(message.item); };
+        socket.onclose = () => { statusDot.classList.remove('online'); statusText.textContent = 'Offline mode'; };
+        socket.onerror = () => socket.close();
+      } catch { statusText.textContent = 'Offline mode'; }
+    }
+
+    if (location.protocol !== 'file:') connect();
+  </script>
+</body>
+</html>
