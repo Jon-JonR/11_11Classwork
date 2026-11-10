@@ -1,0 +1,2 @@
+# This project runs on Node.js and has no Python dependencies.
+# Kept intentionally empty so legacy Render Python build settings do not fail.
