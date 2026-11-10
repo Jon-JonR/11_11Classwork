@@ -19,4 +19,4 @@ wss.on('connection', socket => {
     try { const message = JSON.parse(raw); if (message.type !== 'image' || !message.item?.src) return; images.push(message.item); wss.clients.forEach(client => { if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ type: 'image', item: message.item })); }); } catch (_) {}
   });
 });
-server.listen(PORT, () => console.log(`Common Ground running at http://localhost:${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`Common Ground running on port ${PORT}`));
