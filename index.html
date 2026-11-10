@@ -9,8 +9,9 @@
     * { box-sizing:border-box; }
     html, body { width:100%; height:100%; margin:0; overflow:hidden; }
     body { background:var(--paper); color:var(--ink); font-family:Inter, system-ui, sans-serif; }
-    .canvas-wrap { position:fixed; inset:0; overflow:hidden; background-color:#fbfcf8; background-image:radial-gradient(#d6ddd5 .75px, transparent .75px); background-size:19px 19px; }
-    .canvas { position:absolute; inset:0; }
+    .canvas-wrap { position:fixed; inset:0; overflow:hidden; touch-action:none; cursor:grab; background-color:#fbfcf8; background-image:radial-gradient(#d6ddd5 .75px, transparent .75px); background-size:19px 19px; }
+    .canvas-wrap.dragging { cursor:grabbing; }
+    .canvas { position:absolute; inset:0; width:100%; height:100%; transform:translate3d(0, 0, 0); will-change:transform; }
     .placed-image { position:absolute; max-width:220px; max-height:220px; object-fit:contain; border:5px solid #fff; outline:1px solid rgba(23,35,31,.12); box-shadow:0 10px 19px rgba(31,48,39,.13); animation:arrive .45s cubic-bezier(.2,.8,.2,1); user-select:none; }
     @keyframes arrive { from { opacity:0; transform:scale(.6) rotate(-9deg); } to { opacity:1; transform:scale(1) rotate(var(--rotation)); } }
     .empty { position:absolute; inset:0; display:grid; place-items:center; pointer-events:none; }
@@ -23,7 +24,11 @@
     .connection { position:fixed; z-index:2; left:20px; bottom:20px; display:flex; align-items:center; gap:7px; padding:8px 11px; border:1px solid rgba(23,35,31,.1); border-radius:999px; background:rgba(255,255,255,.72); color:#849087; backdrop-filter:blur(8px); font-size:10px; }
     .dot { width:7px; height:7px; border-radius:50%; background:#e3bb54; }
     .dot.online { background:#61b786; box-shadow:0 0 0 4px #61b78622; }
-    @media (max-width:600px) { .add-button { right:18px; bottom:18px; } .connection { left:12px; bottom:13px; } }
+    @media (max-width:600px) {
+      .canvas { width:1400px; height:1000px; }
+      .add-button { right:18px; bottom:18px; }
+      .connection { left:12px; bottom:13px; }
+    }
   </style>
 </head>
 <body>
@@ -40,8 +45,15 @@
     const input = document.querySelector('#image-input');
     const statusText = document.querySelector('#status-text');
     const statusDot = document.querySelector('#status-dot');
+    const viewport = document.querySelector('.canvas-wrap');
     let images = [];
     let socket;
+    let panX = 0;
+    let panY = 0;
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let startPanX = 0;
+    let startPanY = 0;
     const clientId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random());
 
     function render(item) {
@@ -54,10 +66,39 @@
     }
 
     function randomPlacement(width, height) {
-      const rect = canvas.getBoundingClientRect();
-      const maxX = Math.max(0, rect.width - width); const maxY = Math.max(0, rect.height - height);
-      return { x: maxX ? Math.round(Math.random() * maxX / rect.width * 1000) / 10 : 0, y: maxY ? Math.round(Math.random() * maxY / rect.height * 1000) / 10 : 0 };
+      const maxX = Math.max(0, canvas.offsetWidth - width); const maxY = Math.max(0, canvas.offsetHeight - height);
+      return { x: maxX ? Math.round(Math.random() * maxX / canvas.offsetWidth * 1000) / 10 : 0, y: maxY ? Math.round(Math.random() * maxY / canvas.offsetHeight * 1000) / 10 : 0 };
     }
+
+    function clampPan(x, y) {
+      const maxX = Math.max(0, canvas.offsetWidth - viewport.clientWidth);
+      const maxY = Math.max(0, canvas.offsetHeight - viewport.clientHeight);
+      return { x: Math.min(0, Math.max(-maxX, x)), y: Math.min(0, Math.max(-maxY, y)) };
+    }
+
+    function setPan(x, y) {
+      const next = clampPan(x, y);
+      panX = next.x; panY = next.y;
+      canvas.style.transform = `translate3d(${panX}px, ${panY}px, 0)`;
+    }
+
+    viewport.addEventListener('pointerdown', event => {
+      if (event.target.closest('.placed-image')) return;
+      viewport.setPointerCapture(event.pointerId);
+      viewport.classList.add('dragging');
+      dragStartX = event.clientX; dragStartY = event.clientY;
+      startPanX = panX; startPanY = panY;
+    });
+    viewport.addEventListener('pointermove', event => {
+      if (!viewport.hasPointerCapture(event.pointerId)) return;
+      setPan(startPanX + event.clientX - dragStartX, startPanY + event.clientY - dragStartY);
+    });
+    function endDrag(event) {
+      if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
+      viewport.classList.remove('dragging');
+    }
+    viewport.addEventListener('pointerup', endDrag);
+    viewport.addEventListener('pointercancel', endDrag);
 
     function addImage(file) {
       const reader = new FileReader();
