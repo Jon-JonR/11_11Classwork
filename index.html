@@ -9,9 +9,8 @@
     * { box-sizing:border-box; }
     html, body { width:100%; height:100%; margin:0; overflow:hidden; }
     body { background:var(--paper); color:var(--ink); font-family:Inter, system-ui, sans-serif; }
-    .canvas-wrap { position:fixed; inset:0; overflow:hidden; touch-action:none; cursor:grab; background-color:#fbfcf8; background-image:radial-gradient(#d6ddd5 .75px, transparent .75px); background-size:19px 19px; }
-    .canvas-wrap.dragging { cursor:grabbing; }
-    .canvas { position:absolute; inset:0; width:100%; height:100%; transform:translate3d(0, 0, 0); will-change:transform; }
+    .canvas-wrap { position:fixed; inset:0; overflow:auto; touch-action:auto; background-color:#fbfcf8; background-image:radial-gradient(#d6ddd5 .75px, transparent .75px); background-size:19px 19px; }
+    .canvas { position:relative; min-width:100%; min-height:100%; width:100%; height:100%; }
     .placed-image { position:absolute; max-width:220px; max-height:220px; object-fit:contain; border:5px solid #fff; outline:1px solid rgba(23,35,31,.12); box-shadow:0 10px 19px rgba(31,48,39,.13); animation:arrive .45s cubic-bezier(.2,.8,.2,1); user-select:none; }
     @keyframes arrive { from { opacity:0; transform:scale(.6) rotate(-9deg); } to { opacity:1; transform:scale(1) rotate(var(--rotation)); } }
     .empty { position:absolute; inset:0; display:grid; place-items:center; pointer-events:none; }
@@ -30,7 +29,6 @@
     .dot { width:7px; height:7px; border-radius:50%; background:#e3bb54; }
     .dot.online { background:#61b786; box-shadow:0 0 0 4px #61b78622; }
     @media (max-width:600px) {
-      .canvas { width:1400px; height:1000px; }
       .add-button { right:18px; bottom:18px; }
       .clear-button { right:18px; bottom:70px; }
       .connection { left:12px; bottom:13px; }
@@ -61,57 +59,54 @@
     let clearVotes = 0;
     let clearQuorum = 1;
     let hasVoted = false;
-    let panX = 0;
-    let panY = 0;
-    let dragStartX = 0;
-    let dragStartY = 0;
-    let startPanX = 0;
-    let startPanY = 0;
+    const PLACEMENT_GAP = 24;
+    let canvasWidth = 0;
+    let canvasHeight = 0;
     const clientId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random());
+
+    function setCanvasSize(width = viewport.clientWidth, height = viewport.clientHeight) {
+      canvasWidth = Math.max(canvasWidth, width, viewport.clientWidth);
+      canvasHeight = Math.max(canvasHeight, height, viewport.clientHeight);
+      canvas.style.width = `${canvasWidth}px`;
+      canvas.style.height = `${canvasHeight}px`;
+    }
+
+    function itemPosition(item) {
+      if (item.position === 'px') return { x: item.x, y: item.y };
+      return { x: item.x * canvasWidth / 100, y: item.y * canvasHeight / 100 };
+    }
 
     function render(item) {
       if (document.querySelector(`[data-image-id="${item.id}"]`)) return;
+      setCanvasSize();
+      const position = itemPosition(item);
+      setCanvasSize(position.x + item.width + PLACEMENT_GAP, position.y + item.height + PLACEMENT_GAP);
       const img = document.createElement('img');
       img.className = 'placed-image'; img.dataset.imageId = item.id; img.src = item.src; img.alt = 'A participant contribution';
-      img.style.left = `${item.x}%`; img.style.top = `${item.y}%`; img.style.width = `${item.width}px`; img.style.height = `${item.height}px`;
+      img.style.left = `${position.x}px`; img.style.top = `${position.y}px`; img.style.width = `${item.width}px`; img.style.height = `${item.height}px`;
       img.style.setProperty('--rotation', `${item.rotation}deg`); img.style.transform = `rotate(${item.rotation}deg)`;
       canvas.appendChild(img); images.push(item); empty.style.display = images.length ? 'none' : 'grid';
     }
 
-    function randomPlacement(width, height) {
-      const maxX = Math.max(0, canvas.offsetWidth - width); const maxY = Math.max(0, canvas.offsetHeight - height);
-      return { x: maxX ? Math.round(Math.random() * maxX / canvas.offsetWidth * 1000) / 10 : 0, y: maxY ? Math.round(Math.random() * maxY / canvas.offsetHeight * 1000) / 10 : 0 };
+    function findPlacement(width, height) {
+      setCanvasSize();
+      const occupied = images.map(item => ({ ...itemPosition(item), width: item.width, height: item.height }));
+      const fits = (x, y) => occupied.every(other =>
+        x + width + PLACEMENT_GAP <= other.x ||
+        other.x + other.width + PLACEMENT_GAP <= x ||
+        y + height + PLACEMENT_GAP <= other.y ||
+        other.y + other.height + PLACEMENT_GAP <= y
+      );
+      const step = PLACEMENT_GAP;
+      for (let y = PLACEMENT_GAP; y <= canvasHeight - height - PLACEMENT_GAP; y += step) {
+        for (let x = PLACEMENT_GAP; x <= canvasWidth - width - PLACEMENT_GAP; x += step) {
+          if (fits(x, y)) return { x, y, position: 'px' };
+        }
+      }
+      const y = canvasHeight + PLACEMENT_GAP;
+      setCanvasSize(canvasWidth, y + height + PLACEMENT_GAP);
+      return { x: PLACEMENT_GAP, y, position: 'px' };
     }
-
-    function clampPan(x, y) {
-      const maxX = Math.max(0, canvas.offsetWidth - viewport.clientWidth);
-      const maxY = Math.max(0, canvas.offsetHeight - viewport.clientHeight);
-      return { x: Math.min(0, Math.max(-maxX, x)), y: Math.min(0, Math.max(-maxY, y)) };
-    }
-
-    function setPan(x, y) {
-      const next = clampPan(x, y);
-      panX = next.x; panY = next.y;
-      canvas.style.transform = `translate3d(${panX}px, ${panY}px, 0)`;
-    }
-
-    viewport.addEventListener('pointerdown', event => {
-      if (event.target.closest('.placed-image')) return;
-      viewport.setPointerCapture(event.pointerId);
-      viewport.classList.add('dragging');
-      dragStartX = event.clientX; dragStartY = event.clientY;
-      startPanX = panX; startPanY = panY;
-    });
-    viewport.addEventListener('pointermove', event => {
-      if (!viewport.hasPointerCapture(event.pointerId)) return;
-      setPan(startPanX + event.clientX - dragStartX, startPanY + event.clientY - dragStartY);
-    });
-    function endDrag(event) {
-      if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
-      viewport.classList.remove('dragging');
-    }
-    viewport.addEventListener('pointerup', endDrag);
-    viewport.addEventListener('pointercancel', endDrag);
 
     function addImage(file) {
       if (!file.type.startsWith('image/') && !/\.gif$/i.test(file.name)) return;
@@ -122,7 +117,7 @@
           let width = source.naturalWidth; let height = source.naturalHeight;
           const scale = Math.min(1, MAX_SIZE / Math.max(width, height));
           width = Math.max(35, Math.round(width * scale)); height = Math.max(35, Math.round(height * scale));
-          const item = { id:`${clientId}-${crypto.randomUUID ? crypto.randomUUID() : Date.now()}`, src:reader.result, width, height, ...randomPlacement(width, height), rotation:Math.round(Math.random() * 12 - 6) };
+          const item = { id:`${clientId}-${crypto.randomUUID ? crypto.randomUUID() : Date.now()}`, src:reader.result, width, height, ...findPlacement(width, height), rotation:Math.round(Math.random() * 12 - 6) };
           render(item); if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type:'image', item }));
         };
         source.src = reader.result;
@@ -143,6 +138,10 @@
     function clearCanvas() {
       canvas.querySelectorAll('.placed-image').forEach(image => image.remove());
       images = [];
+      canvasWidth = viewport.clientWidth;
+      canvasHeight = viewport.clientHeight;
+      canvas.style.width = `${canvasWidth}px`;
+      canvas.style.height = `${canvasHeight}px`;
       empty.style.display = 'grid';
     }
 
